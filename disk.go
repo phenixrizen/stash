@@ -28,49 +28,49 @@ func (k key) Path() string {
 }
 
 type diskItem struct {
-	object     interface{}
-	expiration int64
-	key        key
+	Object     interface{} `json:"object"`
+	Expiration int64       `json:"experation"`
+	Key        key         `json:"key"`
 }
 
 // Returns true if the item has expired.
 func (item *diskItem) expired() bool {
-	if item.expiration == 0 {
+	if item.Expiration == 0 {
 		return false
 	}
-	return time.Now().UnixNano() > item.expiration
+	return time.Now().UnixNano() > item.Expiration
 }
 
 // write the byes to disk
 func (item *diskItem) write() error {
-	if item.object == nil {
+	if item.Object == nil {
 		return fmt.Errorf("item has nil object")
 	}
 
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
-	if err := enc.Encode(item.object); err != nil {
+	if err := enc.Encode(item); err != nil {
 		return err
 	}
 
-	err := ioutil.WriteFile(item.key.Path(), buf.Bytes(), 0644)
+	err := ioutil.WriteFile(item.Key.Path(), buf.Bytes(), 0644)
 	if err != nil {
 		return err
 	}
-	item.object = nil
+	item.Object = nil
 
 	return nil
 }
 
 // read the byes from disk
-func (item *diskItem) read(v interface{}) error {
-	f, err := os.Open(item.key.Path())
+func (item *diskItem) read(i *diskItem) error {
+	f, err := os.Open(item.Key.Path())
 	if err != nil {
 		return err
 	}
 
 	dec := gob.NewDecoder(f)
-	if err := dec.Decode(&v); err != nil {
+	if err := dec.Decode(&i); err != nil {
 		return err
 	}
 
@@ -79,7 +79,7 @@ func (item *diskItem) read(v interface{}) error {
 
 // delete the byes from disk
 func (item *diskItem) delete() error {
-	return os.Remove(item.key.Path())
+	return os.Remove(item.Key.Path())
 }
 
 type DiskCache struct {
@@ -95,10 +95,15 @@ type diskCache struct {
 	janitor           *diskJanitor
 }
 
+// Register, registers the types for Gob encoding or decoding
+func (c *diskCache) Register(t interface{}) {
+	gob.Register(t)
+}
+
 // Add an item to the cache, replacing any existing item. If the duration is 0
 // (DefaultExpiration), the cache's default expiration time is used. If it is -1
 // (NoExpiration), the item never expires.
-func (c *diskCache) Set(k string, x interface{}, d time.Duration) error {
+func (c *diskCache) Set(k string, v interface{}, d time.Duration) error {
 	var e int64
 	if d == DefaultExpiration {
 		d = c.defaultExpiration
@@ -108,15 +113,16 @@ func (c *diskCache) Set(k string, x interface{}, d time.Duration) error {
 	}
 	c.mu.Lock()
 	item := &diskItem{
-		object:     x,
-		expiration: e,
-		key:        key(k),
+		Object:     v,
+		Expiration: e,
+		Key:        key(k),
 	}
 	err := item.write()
 	if err != nil {
+		c.mu.Unlock()
 		return err
 	}
-	item.object = nil
+	item.Object = nil
 	c.items[k] = item
 	// TODO: Calls to mu.Unlock are currently not deferred because defer
 	// adds ~200 ns (as of go1.)
@@ -125,7 +131,7 @@ func (c *diskCache) Set(k string, x interface{}, d time.Duration) error {
 	return nil
 }
 
-func (c *diskCache) set(k string, x interface{}, d time.Duration) error {
+func (c *diskCache) set(k string, v interface{}, d time.Duration) error {
 	var e int64
 	if d == DefaultExpiration {
 		d = c.defaultExpiration
@@ -134,15 +140,15 @@ func (c *diskCache) set(k string, x interface{}, d time.Duration) error {
 		e = time.Now().Add(d).UnixNano()
 	}
 	item := &diskItem{
-		object:     x,
-		expiration: e,
-		key:        key(k),
+		Object:     v,
+		Expiration: e,
+		Key:        key(k),
 	}
 	err := item.write()
 	if err != nil {
 		return err
 	}
-	item.object = nil
+	item.Object = nil
 	c.items[k] = item
 
 	return nil
@@ -150,15 +156,15 @@ func (c *diskCache) set(k string, x interface{}, d time.Duration) error {
 
 // Add an item to the cache, replacing any existing item, using the default
 // expiration.
-func (c *diskCache) SetDefault(k string, x interface{}) error {
-	return c.Set(k, x, DefaultExpiration)
+func (c *diskCache) SetDefault(k string, v interface{}) error {
+	return c.Set(k, v, DefaultExpiration)
 }
 
 // Add an item to the cache only if an item doesn't already exist for the given
 // key, or if the existing item has expired. Returns an error otherwise.
-func (c *diskCache) Add(k string, x interface{}, d time.Duration) error {
+func (c *diskCache) Add(k string, v interface{}, d time.Duration) error {
 	c.mu.Lock()
-	found, err := c.get(k, x)
+	_, found, err := c.get(k)
 	if err != nil {
 		return err
 	}
@@ -166,7 +172,7 @@ func (c *diskCache) Add(k string, x interface{}, d time.Duration) error {
 		c.mu.Unlock()
 		return fmt.Errorf("Item %s already exists", k)
 	}
-	err = c.set(k, x, d)
+	err = c.set(k, v, d)
 	if err != nil {
 		return err
 	}
@@ -176,9 +182,9 @@ func (c *diskCache) Add(k string, x interface{}, d time.Duration) error {
 
 // Set a new value for the cache key only if it already exists, and the existing
 // item hasn't expired. Returns an error otherwise.
-func (c *diskCache) Replace(k string, x interface{}, d time.Duration) error {
+func (c *diskCache) Replace(k string, v interface{}, d time.Duration) error {
 	c.mu.Lock()
-	found, err := c.get(k, x)
+	_, found, err := c.get(k)
 	if err != nil {
 		return err
 	}
@@ -186,35 +192,35 @@ func (c *diskCache) Replace(k string, x interface{}, d time.Duration) error {
 		c.mu.Unlock()
 		return fmt.Errorf("Item %s doesn't exist", k)
 	}
-	c.set(k, x, d)
+	c.set(k, v, d)
 	c.mu.Unlock()
 	return nil
 }
 
 // Get an item from the cache. Returns the item or nil, and a bool indicating
 // whether the key was found.
-func (c *diskCache) Get(k string, v interface{}) (bool, error) {
+func (c *diskCache) Get(k string) (interface{}, bool, error) {
 	c.mu.RLock()
 	// "Inlining" of get and Expired
 	item, found := c.items[k]
 	if found {
-		err := item.read(v)
+		err := item.read(item)
 		if err != nil {
-			return false, err
+			return nil, false, err
 		}
 	}
 	if !found {
 		c.mu.RUnlock()
-		return false, nil
+		return nil, false, nil
 	}
-	if item.expiration > 0 {
-		if time.Now().UnixNano() > item.expiration {
+	if item.Expiration > 0 {
+		if time.Now().UnixNano() > item.Expiration {
 			c.mu.RUnlock()
-			return false, nil
+			return nil, false, nil
 		}
 	}
 	c.mu.RUnlock()
-	return true, nil
+	return item.Object, true, nil
 }
 
 // GetWithExpiration returns an item and its expiration time from the cache.
@@ -230,41 +236,41 @@ func (c *diskCache) GetWithExpiration(k string) (interface{}, time.Time, bool) {
 		return nil, time.Time{}, false
 	}
 
-	if item.expiration > 0 {
-		if time.Now().UnixNano() > item.expiration {
+	if item.Expiration > 0 {
+		if time.Now().UnixNano() > item.Expiration {
 			c.mu.RUnlock()
 			return nil, time.Time{}, false
 		}
 
 		// Return the item and the expiration time
 		c.mu.RUnlock()
-		return item.object, time.Unix(0, item.expiration), true
+		return item.Object, time.Unix(0, item.Expiration), true
 	}
 
 	// If expiration <= 0 (i.e. no expiration time set) then return the item
 	// and a zeroed time.Time
 	c.mu.RUnlock()
-	return item.object, time.Time{}, true
+	return item.Object, time.Time{}, true
 }
 
-func (c *diskCache) get(k string, v interface{}) (bool, error) {
+func (c *diskCache) get(k string) (interface{}, bool, error) {
 	item, found := c.items[k]
 	if found {
-		err := item.read(v)
+		err := item.read(item)
 		if err != nil {
-			return false, err
+			return nil, false, err
 		}
 	}
 	if !found {
-		return false, nil
+		return nil, false, nil
 	}
 	// "Inlining" of Expired
-	if item.expiration > 0 {
-		if time.Now().UnixNano() > item.expiration {
-			return false, nil
+	if item.Expiration > 0 {
+		if time.Now().UnixNano() > item.Expiration {
+			return nil, false, nil
 		}
 	}
-	return true, nil
+	return item.Object, true, nil
 }
 
 // Delete an item from the cache. Does nothing if the key is not in the cache.
@@ -288,9 +294,9 @@ func (c *diskCache) delete(k string) (interface{}, bool, error) {
 			delete(c.items, k)
 			err := v.delete()
 			if err != nil {
-				return v.object, true, err
+				return v.Object, true, err
 			}
-			return v.object, true, nil
+			return v.Object, true, nil
 		}
 	}
 	item := c.items[k]
@@ -314,7 +320,7 @@ func (c *diskCache) DeleteExpired() error {
 	c.mu.Lock()
 	for k, v := range c.items {
 		// "Inlining" of expired
-		if v.expiration > 0 && now > v.expiration {
+		if v.Expiration > 0 && now > v.Expiration {
 			ov, evicted, err := c.delete(k)
 			if err != nil {
 				return err
@@ -354,7 +360,7 @@ func (c *diskCache) Save(w io.Writer) (err error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, v := range c.items {
-		gob.Register(v.object)
+		gob.Register(v.Object)
 	}
 	err = enc.Encode(&c.items)
 	return
@@ -426,8 +432,8 @@ func (c *diskCache) Items() map[string]*diskItem {
 	now := time.Now().UnixNano()
 	for k, v := range c.items {
 		// "Inlining" of Expired
-		if v.expiration > 0 {
-			if now > v.expiration {
+		if v.Expiration > 0 {
+			if now > v.Expiration {
 				continue
 			}
 		}
@@ -508,6 +514,7 @@ func newCacheWithJanitor(root string, de time.Duration, ci time.Duration, m map[
 	// garbage collected, the finalizer stops the janitor goroutine, after
 	// which c can be collected.
 	C := &DiskCache{c}
+	C.Register(map[string]interface{}{})
 	if ci > 0 {
 		runDiskJanitor(c, ci)
 		runtime.SetFinalizer(C, stopDiskJanitor)

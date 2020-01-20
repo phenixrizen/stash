@@ -28,18 +28,23 @@ func TestSetGetDiskCache(t *testing.T) {
 		"c": true,
 	}
 
-	err := dc.Set("test-key", obj, 5*time.Minute)
+	err := dc.Set("test-key", obj, 3*time.Second)
 	assert.Nil(err)
 
-	var rObj map[string]interface{}
-	ok, err := dc.Get("test-key", rObj)
+	rObj, ok, err := dc.Get("test-key")
 	assert.Nil(err)
 	assert.True(ok)
 	assert.Equal(rObj, obj)
 
 	time.Sleep(2 * time.Second)
-	ok, err = dc.Get("test-key", rObj)
+	rObj2, ok, err := dc.Get("test-key")
 	assert.Nil(err)
 	assert.True(ok)
-	assert.Equal(rObj, obj)
+	assert.Equal(rObj2, obj)
+
+	time.Sleep(2 * time.Second)
+	rObj3, ok, err := dc.Get("test-key")
+	assert.Nil(err)
+	assert.False(ok)
+	assert.Nil(rObj3)
 }
