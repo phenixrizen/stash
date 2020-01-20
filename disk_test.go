@@ -31,20 +31,17 @@ func TestSetGetDiskCache(t *testing.T) {
 	err := dc.Set("test-key", obj, 3*time.Second)
 	assert.Nil(err)
 
-	rObj, ok, err := dc.Get("test-key")
+	rObj, err := dc.Get("test-key")
 	assert.Nil(err)
-	assert.True(ok)
 	assert.Equal(rObj, obj)
 
 	time.Sleep(2 * time.Second)
-	rObj2, ok, err := dc.Get("test-key")
+	rObj2, err := dc.Get("test-key")
 	assert.Nil(err)
-	assert.True(ok)
 	assert.Equal(rObj2, obj)
 
 	time.Sleep(2 * time.Second)
-	rObj3, ok, err := dc.Get("test-key")
+	rObj3, err := dc.Get("test-key")
 	assert.Nil(err)
-	assert.False(ok)
 	assert.Nil(rObj3)
 }

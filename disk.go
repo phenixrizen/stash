@@ -199,28 +199,28 @@ func (c *diskCache) Replace(k string, v interface{}, d time.Duration) error {
 
 // Get an item from the cache. Returns the item or nil, and a bool indicating
 // whether the key was found.
-func (c *diskCache) Get(k string) (interface{}, bool, error) {
+func (c *diskCache) Get(k string) (interface{}, error) {
 	c.mu.RLock()
 	// "Inlining" of get and Expired
 	item, found := c.items[k]
 	if found {
 		err := item.read(item)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 	}
 	if !found {
 		c.mu.RUnlock()
-		return nil, false, nil
+		return nil, nil
 	}
 	if item.Expiration > 0 {
 		if time.Now().UnixNano() > item.Expiration {
 			c.mu.RUnlock()
-			return nil, false, nil
+			return nil, nil
 		}
 	}
 	c.mu.RUnlock()
-	return item.Object, true, nil
+	return item.Object, nil
 }
 
 // GetWithExpiration returns an item and its expiration time from the cache.
