@@ -12,19 +12,32 @@ const (
 )
 
 type Stash struct {
-	mem     *MemoryCache
-	disk    *DiskCache
-	maxSize int64
+	memCache  *MemoryCache
+	diskCache *DiskCache
+	maxSize   int64
 }
 
-func NewStash() *Stash {
+func NewStash(root string, maxSize int64, defaultExpiration, cleanupInterval time.Duration) *Stash {
+	mc := NewMemoryCache(defaultExpiration, cleanupInterval)
+	dc := NewDiskCache(root, defaultExpiration, cleanupInterval)
+	s := &Stash{
+		memCache:  mc,
+		diskCache: dc,
+		maxSize:   maxSize,
+	}
+	return s
+}
+
+func (s *Stash) Set(k string, v interface{}, d time.Duration) error {
+	err := s.diskCache.Set(k, v, d)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
-func (s *Stash) Set(k string, x interface{}, d time.Duration) {
-
-}
-
 func (s *Stash) Get(key string) (interface{}, bool) {
-	return nil, false
+	return s.memCache.Get(key)
 }
+
+//unsafe.Sizeof(hmap)
