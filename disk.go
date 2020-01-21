@@ -28,9 +28,10 @@ func (k key) Path() string {
 }
 
 type diskItem struct {
-	Object     interface{} `json:"object"`
-	Expiration int64       `json:"experation"`
-	Key        key         `json:"key"`
+	Object     interface{}
+	Expiration int64
+	Key        key
+	Size       int64
 }
 
 // Returns true if the item has expired.
@@ -53,11 +54,13 @@ func (item *diskItem) write() error {
 		return err
 	}
 
-	err := ioutil.WriteFile(item.Key.Path(), buf.Bytes(), 0644)
+	data := buf.Bytes()
+	err := ioutil.WriteFile(item.Key.Path(), data, 0644)
 	if err != nil {
 		return err
 	}
 	item.Object = nil
+	item.Size = int64(len(data))
 
 	return nil
 }
@@ -68,13 +71,22 @@ func (item *diskItem) read(i *diskItem) error {
 	if err != nil {
 		return err
 	}
-
 	dec := gob.NewDecoder(f)
 	if err := dec.Decode(&i); err != nil {
 		return err
 	}
+	stat, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	i.Size = stat.Size()
 
 	return nil
+}
+
+// size returns the size in bytes of the item
+func (item *diskItem) size() int64 {
+	return item.Size
 }
 
 // delete the byes from disk
@@ -221,6 +233,32 @@ func (c *diskCache) Get(k string) (interface{}, error) {
 	}
 	c.mu.RUnlock()
 	return item.Object, nil
+}
+
+// GetWithSize an item from the cache. Returns the item or nil, and a bool indicating
+// whether the key was found.
+func (c *diskCache) GetWithSize(k string) (interface{}, int64, error) {
+	c.mu.RLock()
+	// "Inlining" of get and Expired
+	item, found := c.items[k]
+	if found {
+		err := item.read(item)
+		if err != nil {
+			return nil, -1, err
+		}
+	}
+	if !found {
+		c.mu.RUnlock()
+		return nil, -1, nil
+	}
+	if item.Expiration > 0 {
+		if time.Now().UnixNano() > item.Expiration {
+			c.mu.RUnlock()
+			return nil, -1, nil
+		}
+	}
+	c.mu.RUnlock()
+	return item.Object, item.size(), nil
 }
 
 // GetWithExpiration returns an item and its expiration time from the cache.
