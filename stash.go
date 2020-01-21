@@ -49,25 +49,27 @@ func (s *Stash) Get(k string) (interface{}, error) {
 	v, ok := s.memCache.Get(k)
 	if ok {
 		return v, nil
-	} else {
-		// not in memory so we check the disk
-		v, size, err := s.diskCache.GetWithSize(k)
+	}
+
+	// not in memory so we check the disk
+	v, size, err := s.diskCache.GetWithSize(k)
+	if err != nil {
+		_ = size
+		_ = v
+		return nil, err
+	}
+	// check if we can add it to the memory cache
+	if s.size+size < s.maxSize {
+		err := s.memCache.Add(k, v, 48*time.Hour)
 		if err != nil {
-			_ = size
-			_ = v
 			return nil, err
 		}
-		// check if we can add it to the mem cache
-		if s.size+size < s.maxSize {
-			err := s.memCache.Add(k, v, 48*time.Hour)
-			if err != nil {
-				return nil, err
-			}
-			atomic.AddInt64(&s.size, size)
-			s.mu.Lock()
-			s.hot[k]++
-			s.mu.Unlock()
-		}
+		atomic.AddInt64(&s.size, size)
+		s.mu.Lock()
+		s.hot[k]++
+		s.mu.Unlock()
+		return v, nil
 	}
+
 	return nil, nil
 }
