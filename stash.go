@@ -1,10 +1,13 @@
 package stash
 
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"time"
 
-import "sync/atomic"
-
-import "sync"
+	"github.com/dgraph-io/badger"
+	"github.com/dgraph-io/ristretto"
+)
 
 const (
 	// For use with functions that take an expiration time.
@@ -16,60 +19,109 @@ const (
 )
 
 type Stash struct {
-	memCache  *MemoryCache
-	diskCache *DiskCache
-	maxSize   int64
-	size      int64
-	mu        sync.RWMutex
-	hot       map[string]int64
+	memoryCache       *ristretto.Cache
+	diskCache         *badger.DB
+	defaultExpiration time.Duration
 }
 
-func NewStash(root string, maxSize int64, defaultExpiration, cleanupInterval time.Duration) *Stash {
-	mc := NewMemoryCache(defaultExpiration, cleanupInterval)
-	dc := NewDiskCache(root, defaultExpiration, cleanupInterval)
-	s := &Stash{
-		memCache:  mc,
-		diskCache: dc,
-		maxSize:   maxSize,
+func New(root string, maxSize int64, defaultExpiration time.Duration, metrics bool) (*Stash, error) {
+	if maxSize < 1 || maxSize == 0 {
+		return nil, fmt.Errorf("please pass a reasonable size for the in memory cache, i.e. '1 << 30' is 1GB")
 	}
-	return s
+	memoryCache, err := ristretto.NewCache(&ristretto.Config{
+		NumCounters: 1e7,     // number of keys to track frequency of (10M).
+		MaxCost:     maxSize, // maximum cost of cache, 1 << 30 is 1GB.
+		BufferItems: 64,      // number of keys per Get buffer.
+		Metrics:     metrics,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	diskCache, err := badger.Open(badger.DefaultOptions(root))
+	if err != nil {
+		return nil, err
+	}
+	s := &Stash{
+		memoryCache:       memoryCache,
+		diskCache:         diskCache,
+		defaultExpiration: defaultExpiration,
+	}
+	return s, nil
 }
 
 func (s *Stash) Set(k string, v interface{}, d time.Duration) error {
-	err := s.diskCache.Set(k, v, d)
+	err := s.diskCache.Update(func(txn *badger.Txn) error {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		e := badger.NewEntry([]byte(k), b).WithTTL(d)
+		err = txn.SetEntry(e)
+		return err
+	})
 	if err != nil {
 		return err
 	}
-	s.memCache.Delete(k)
+
+	s.memoryCache.Del([]byte(k))
 	return nil
 }
 
-func (s *Stash) Get(k string) (interface{}, error) {
+func (s *Stash) Get(k string, v interface{}) error {
 	// first check if it's in memory
-	v, ok := s.memCache.Get(k)
+	i, ok := s.memoryCache.Get([]byte(k))
 	if ok {
-		return v, nil
-	}
-
-	// not in memory so we check the disk
-	v, size, err := s.diskCache.GetWithSize(k)
-	if err != nil {
-		_ = size
-		_ = v
-		return nil, err
-	}
-	// check if we can add it to the memory cache
-	if s.size+size < s.maxSize {
-		err := s.memCache.Add(k, v, 48*time.Hour)
-		if err != nil {
-			return nil, err
+		b, ok := i.([]byte)
+		if ok {
+			err := json.Unmarshal(b, &v)
+			if err != nil {
+				return err
+			}
+			return nil
 		}
-		atomic.AddInt64(&s.size, size)
-		s.mu.Lock()
-		s.hot[k]++
-		s.mu.Unlock()
-		return v, nil
 	}
 
-	return nil, nil
+	// it's not in memory so we check the disk
+	err := s.diskCache.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte(k))
+		if err != nil {
+			return err
+		}
+
+		var valCopy []byte
+		err = item.Value(func(val []byte) error {
+			valCopy = append([]byte{}, val...)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+
+		err = json.Unmarshal(valCopy, &v)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	ok = s.memoryCache.SetWithTTL([]byte(k), b, 0, s.defaultExpiration)
+	if !ok {
+		return fmt.Errorf("error setting %s=>%s", k, b)
+	}
+
+	return nil
+}
+
+func (s *Stash) GetMemoryCacheStats() string {
+	return s.memoryCache.Metrics.String()
 }
