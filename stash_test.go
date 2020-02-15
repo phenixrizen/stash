@@ -60,6 +60,22 @@ func (suite *StashTestSuite) TestStash() {
 	suite.NotNil(err)
 	suite.Equal("", rval)
 	fmt.Println(suite.st.GetMemoryCacheStats())
+
+	// test Del
+	key := "foobar"
+	val := "baz"
+	err = suite.st.Set(key, val, 1*time.Minute)
+	suite.Nil(err)
+	var rval2 string
+	err = suite.st.Get(key, &rval2)
+	suite.Nil(err)
+	suite.Equal(val, rval2)
+	fmt.Println(suite.st.GetMemoryCacheStats())
+	err = suite.st.Del(key)
+	var rval3 string
+	err = suite.st.Get(key, &rval3)
+	suite.NotNil(err)
+	suite.Equal("", rval3)
 }
 
 func (suite *StashTestSuite) TestBadStashParams() {

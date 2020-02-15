@@ -122,6 +122,14 @@ func (s *Stash) Get(k string, v interface{}) error {
 	return nil
 }
 
+func (s *Stash) Del(k string) error {
+	s.memoryCache.Del([]byte(k))
+	err := s.diskCache.Update(func(txn *badger.Txn) error {
+		return txn.Delete([]byte(k))
+	})
+	return err
+}
+
 func (s *Stash) GetMemoryCacheStats() string {
 	return s.memoryCache.Metrics.String()
 }
